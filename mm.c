@@ -70,8 +70,10 @@ static void place(void *bp, size_t asize);
 static void *coalesce(void *bp);
 static void *extend_heap(size_t words);
 static void *first_fit(size_t asize);
+static void *next_fit(size_t asize);
 
 static char *heap_listp;    // heap_listp is a pointer
+static char *nextp;         // next_fit 함수에서 사용하는 포인터
 
 /* 
  * mm_init - initialize the malloc package.
@@ -88,6 +90,8 @@ int mm_init(void)
     
     if (extend_heap(CHUNKSIZE/WSIZE) == NULL)   // extend heap
         return -1;
+    
+    nextp = heap_listp; // nextp points to prologue footer
     return 0;
 }
 
@@ -109,8 +113,9 @@ void *mm_malloc(size_t size)
     else
         asize = DSIZE * ((size + (DSIZE) + (DSIZE-1)) / DSIZE);  // asize는 size를 8의 배수로 올림한 값입니다.
     
-    if ((bp = first_fit(asize)) != NULL) {   // find_fit 함수를 호출하여 메모리 블록을 할당합니다.
+    if ((bp = next_fit(asize)) != NULL) {   // find_fit 함수를 호출하여 메모리 블록을 할당합니다.
         place(bp,asize);        // place 함수를 호출하여 메모리 블록을 할당합니다.
+        nextp = bp;
         return bp;              // 할당된 메모리 블록의 주소를 반환합니다.
     }
 
@@ -118,6 +123,7 @@ void *mm_malloc(size_t size)
     if ((bp = extend_heap(extendsize/WSIZE)) == NULL)   // extend heap
         return NULL;
     place(bp,asize);        // place 함수를 호출하여 메모리 블록을 할당합니다.
+    nextp = bp;
     return bp;
 }
 
@@ -178,6 +184,7 @@ static void *coalesce(void *bp)     // bp is a pointer      coalesce is a functi
 
     if (prev_alloc && next_alloc) {
     /* Case 1 */    // prev_alloc = 1  next_alloc = 1
+        nextp = bp;
         return bp;
     }
     else if (prev_alloc && !next_alloc) {
@@ -201,6 +208,7 @@ static void *coalesce(void *bp)     // bp is a pointer      coalesce is a functi
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size,0));
         bp = PREV_BLKP(bp);
     }
+    nextp = bp;
     return bp;
 }
 
@@ -226,6 +234,29 @@ static void *first_fit(size_t asize)
     for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
         if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp))))
             return bp;
+    }
+    return NULL;
+}
+
+static void *next_fit(size_t asize)
+{
+    char *bp = nextp;
+
+    /* Search from the next fit */
+    for (bp = nextp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
+        if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) {
+            nextp = bp;
+            return bp;
+        }
+    }
+
+    bp = heap_listp;
+    while (bp < nextp) {
+        bp = NEXT_BLKP(bp);
+        if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) {
+            nextp = bp;
+            return bp;
+        }
     }
     return NULL;
 }
