@@ -1,5 +1,3 @@
-// explicit list
-
 /*
  * mm-naive.c - The fastest, least memory-efficient malloc package.
  * 
@@ -63,47 +61,37 @@ team_t team = {
 #define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(((char *)(bp)-WSIZE)))   // next block pointer   (char *)(bp) is a pointer   ((char *)(bp)-WSIZE) is a macro
 #define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char *)(bp)-DSIZE)))   // previous block pointer   (char *)(bp) is a pointer   ((char *)(bp)-DSIZE) is a macro
 
-#define PRED_PTR(bp) ((char *)(bp))   // predecessor pointer
-#define SUCC_PTR(bp) ((char *)(bp) + WSIZE)   // successor pointer
-
-#define PRED(bp) (*(char **)(bp))   // predecessor
-#define SUCC(bp) (*(char **)(SUCC_PTR(bp)))   // successor
-
 #define ALIGNMENT 8 // alignment    8 bytes = 64 bits   64 bits is a word
 /* rounds up to the nearest multiple of ALIGNMENT */
 #define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~0x7)   // (ALIGNMENT-1) = 7 = 0111   ~0x7 = 1000
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t))) // size_t is a type  sizeof(size_t) is a macro
 
+static void place(void *bp, size_t asize);
 static void *coalesce(void *bp);
 static void *extend_heap(size_t words);
-static void *find_fit(size_t asize);
-static void place(void *bp, size_t asize);
-static void remove_block(void *bp);
-static void insert_block(void *bp);
+static void *first_fit(size_t asize);
+static void *next_fit(size_t asize);
 
-/* Global variables */
 static char *heap_listp;    // heap_listp is a pointer
+static char *nextp;         // next_fit 함수에서 사용하는 포인터
 
 /* 
  * mm_init - initialize the malloc package.
  */
 int mm_init(void)
 {
-    if ((heap_listp = mem_sbrk(6*WSIZE)) == (void *)-1)
+    if ((heap_listp = mem_sbrk(4*WSIZE)) == (void *)-1)
         return -1;
     PUT(heap_listp, 0);     // padding
-    PUT(heap_listp + (1*WSIZE), PACK(2*DSIZE,1)); // prologue header
-
-    PUT(heap_listp + (2*WSIZE), heap_listp + (3*WSIZE)); //  predecessor
-    PUT(heap_listp + (3*WSIZE), heap_listp + (2*WSIZE)); //  successor
-
-    PUT(heap_listp + (4*WSIZE), PACK(2*DSIZE,1)); // prologue footer
-    PUT(heap_listp + (5*WSIZE), PACK(0,1)); // epilogue header
+    PUT(heap_listp + (1*WSIZE), PACK(DSIZE,1)); // prologue header
+    PUT(heap_listp + (2*WSIZE), PACK(DSIZE,1)); // prologue footer
+    PUT(heap_listp + (3*WSIZE), PACK(0,1)); // epilogue header
     heap_listp += (2*WSIZE);    // heap_listp points to prologue footer
-
+    
     if (extend_heap(CHUNKSIZE/WSIZE) == NULL)   // extend heap
         return -1;
-
+    
+    nextp = heap_listp; // nextp points to prologue footer
     return 0;
 }
 
@@ -125,8 +113,9 @@ void *mm_malloc(size_t size)
     else
         asize = DSIZE * ((size + (DSIZE) + (DSIZE-1)) / DSIZE);  // asize는 size를 8의 배수로 올림한 값입니다.
     
-    if ((bp = find_fit(asize)) != NULL) {   // find_fit 함수를 호출하여 메모리 블록을 할당합니다.
+    if ((bp = next_fit(asize)) != NULL) {   // find_fit 함수를 호출하여 메모리 블록을 할당합니다.
         place(bp,asize);        // place 함수를 호출하여 메모리 블록을 할당합니다.
+        nextp = bp;
         return bp;              // 할당된 메모리 블록의 주소를 반환합니다.
     }
 
@@ -134,6 +123,7 @@ void *mm_malloc(size_t size)
     if ((bp = extend_heap(extendsize/WSIZE)) == NULL)   // extend heap
         return NULL;
     place(bp,asize);        // place 함수를 호출하여 메모리 블록을 할당합니다.
+    nextp = bp;
     return bp;
 }
 
@@ -170,31 +160,15 @@ void *mm_realloc(void *ptr, size_t size)    // ptr은 이전 메모리 블록의
     return newptr;              // 새로운 메모리 블록의 포인터를 반환합니다.
 }
 
-static void remove_block(void *bp)    // bp는 메모리 블록의 주소입니다.
-{
-    SUCC(PRED(bp)) = SUCC(bp);        // 이전 메모리 블록의 successor를 현재 메모리 블록의 successor로 설정합니다.
-    PRED(SUCC(bp)) = PRED(bp);        // 다음 메모리 블록의 predecessor를 현재 메모리 블록의 predecessor로 설정합니다.
-}
-
-static void insert_block(void *bp)    // bp는 메모리 블록의 주소입니다.
-{
-    SUCC(bp) = SUCC(heap_listp);      // 현재 메모리 블록의 successor를 heap_listp의 successor로 설정합니다.
-    PRED(bp) = heap_listp;            // 현재 메모리 블록의 predecessor를 heap_listp로 설정합니다.
-    PRED(SUCC(heap_listp)) = bp;      // heap_listp의 successor의 predecessor를 현재 메모리 블록으로 설정합니다.
-    SUCC(heap_listp) = bp;            // heap_listp의 successor를 현재 메모리 블록으로 설정합니다.
-}
-
 static void place(void *bp, size_t asize)
 {
-    size_t csize = GET_SIZE(HDRP(bp));
-    remove_block(bp);       // remove_block 함수를 호출하여 메모리 블록을 할당합니다.     
+    size_t csize = GET_SIZE(HDRP(bp));      
     if ((csize - asize) >= (2*DSIZE)) {     // (csize - asize) is a size_t type
         PUT(HDRP(bp), PACK(asize,1));       // PACK(asize,1) is a macro
         PUT(FTRP(bp), PACK(asize,1));       // PACK(asize,1) is a macro
         bp = NEXT_BLKP(bp);                 // bp is a pointer
         PUT(HDRP(bp), PACK(csize-asize,0));
         PUT(FTRP(bp), PACK(csize-asize,0));
-        insert_block(bp);                   // insert_block 함수를 호출하여 메모리 블록을 할당합니다.
     }
     else {
         PUT(HDRP(bp), PACK(csize,1));
@@ -208,31 +182,32 @@ static void *coalesce(void *bp)     // bp is a pointer      coalesce is a functi
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
     size_t size       = GET_SIZE(HDRP(bp));
 
-    if (prev_alloc && !next_alloc) {
-    /* Case 1 */  // prev_alloc = 1  next_alloc = 0
-        remove_block(NEXT_BLKP(bp));       // remove_block 함수를 호출하여 메모리 블록을 할당합니다.
+    if (prev_alloc && next_alloc) {
+    /* Case 1 */    // prev_alloc = 1  next_alloc = 1
+        nextp = bp;
+        return bp;
+    }
+    else if (prev_alloc && !next_alloc) {
+    /* Case 2 */  // prev_alloc = 1  next_alloc = 0
         size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
         PUT(HDRP(bp), PACK(size,0));
         PUT(FTRP(bp), PACK(size,0));
     }
     else if (!prev_alloc && next_alloc) {
-    /* Case 2 */  // prev_alloc = 0  next_alloc = 1
-        remove_block(PREV_BLKP(bp));       // remove_block 함수를 호출하여 메모리 블록을 할당합니다.
+    /* Case 3 */  // prev_alloc = 0  next_alloc = 1
         size += GET_SIZE(HDRP(PREV_BLKP(bp)));
         PUT(FTRP(bp), PACK(size,0));
         PUT(HDRP(PREV_BLKP(bp)), PACK(size,0));
         bp = PREV_BLKP(bp);
     }
-    else if (!prev_alloc && !next_alloc) {
-    /* Case 3 */   // prev_alloc = 0  next_alloc = 0
-        remove_block(PREV_BLKP(bp));
-        remove_block(NEXT_BLKP(bp));
+    else {
+    /* Case 4 */   // prev_alloc = 0  next_alloc = 0
         size += GET_SIZE(HDRP(PREV_BLKP(bp))) + GET_SIZE(FTRP(NEXT_BLKP(bp)));
         PUT(HDRP(PREV_BLKP(bp)), PACK(size,0));
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size,0));
         bp = PREV_BLKP(bp);
     }
-    insert_block(bp);
+    nextp = bp;
     return bp;
 }
 
@@ -252,12 +227,35 @@ static void *extend_heap(size_t words)
     return coalesce(bp);
 }
 
-static void *find_fit(size_t asize)
+static void *first_fit(size_t asize)
 {
     char *bp;
-    for (bp = SUCC(heap_listp); !GET_ALLOC(HDRP(bp)); bp = SUCC(bp)) {
-        if ((asize <= GET_SIZE(HDRP(bp))))
+    for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
+        if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp))))
             return bp;
+    }
+    return NULL;
+}
+
+static void *next_fit(size_t asize)
+{
+    char *bp = nextp;
+
+    /* Search from the next fit */
+    for (bp = nextp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
+        if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) {
+            nextp = bp;
+            return bp;
+        }
+    }
+
+    bp = heap_listp;
+    while (bp < nextp) {
+        bp = NEXT_BLKP(bp);
+        if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) {
+            nextp = bp;
+            return bp;
+        }
     }
     return NULL;
 }
